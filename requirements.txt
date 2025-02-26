@@ -1,0 +1,4 @@
+requests
+authlib
+boto3
+cryptography
