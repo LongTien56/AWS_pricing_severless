@@ -3,12 +3,17 @@ import boto3
 import requests
 import os
 from authlib.integrations.requests_client import OAuth2Session
+from botocore.exceptions import ClientError
+
 
 # Load Cognito details from AWS SSM Parameter Store
 ssm = boto3.client("ssm")
 USER_POOL_ID = ssm.get_parameter(Name="/auth/user-pool-id", WithDecryption=True)["Parameter"]["Value"]
 CLIENT_ID = ssm.get_parameter(Name="/auth/app-client-id", WithDecryption=True)["Parameter"]["Value"]
-CLIENT_SECRET = ssm.get_parameter(Name="/auth/app-client-secret", WithDecryption=True)["Parameter"]["Value"]
+
+#Secret Manager
+secret_name = "auth/bom/client_secret"
+region_name = "us-east-1"
 
 # Cognito OIDC URLs
 COGNITO_DOMAIN = ssm.get_parameter(Name="/auth/cognito-domain", WithDecryption=True)["Parameter"]["Value"]
@@ -18,6 +23,26 @@ USERINFO_URL = f"{COGNITO_DOMAIN}/oauth2/userInfo"
 LOGOUT_URL = f"{COGNITO_DOMAIN}/logout"
 REDIRECT_URI = ssm.get_parameter(Name="/auth/redirect-uri", WithDecryption=True)["Parameter"]["Value"]
 API_GATEWAY_URI = ssm.get_parameter(Name="/auth/api-gateway-uri", WithDecryption=True)["Parameter"]["Value"]
+
+session = boto3.session.Session()
+client = session.client(
+    service_name='secretsmanager',
+    region_name=region_name
+)
+
+try:
+    get_secret_value_response = client.get_secret_value(
+        SecretId=secret_name
+    )
+except ClientError as e:
+    # For a list of exceptions thrown, see
+    # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+    raise e
+
+
+CLIENT_SECRET = get_secret_value_response['SecretString']
+
+
 
 def lambda_handler(event, context):
     path = event["rawPath"]

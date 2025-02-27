@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSON to Excel Converter</title>
+    <script>
+        // 🔹 Define API Gateway URL (Change this when API Gateway changes)
+        const API_BASE_URL = "https://zzgzxd9ctg.execute-api.us-east-1.amazonaws.com";
+
+        // 1️⃣ Check if the user is authenticated
+        async function checkAuthentication() {
+            const token = localStorage.getItem("authToken");
+
+            if (!token) {
+                alert("You are not logged in! Redirecting to login...");
+                window.location.href = API_BASE_URL + "/login";
+                return;
+            }
+
+            try {
+                const response = await fetch(API_BASE_URL + "/home?token=" + token);
+                const data = await response.json();
+
+                if (response.status === 200) {
+                    document.getElementById("userInfo").innerText = `Logged in as: ${data.user.email}`;
+                    document.getElementById("uploadForm").style.display = "block";
+                    document.getElementById("logoutButton").style.display = "block";
+                } else {
+                    alert("Session expired! Redirecting to login...");
+                    localStorage.removeItem("authToken");
+                    window.location.href = API_BASE_URL + "/login";
+                }
+            } catch (error) {
+                console.error("Error:", error);
+                alert("Something went wrong! Redirecting to login...");
+                window.location.href = API_BASE_URL + "/login";
+            }
+        }
+
+        // 2️⃣ Handle Logout
+        function logout() {
+            localStorage.removeItem("authToken");
+            alert("Logged out successfully!");
+            window.location.href = API_BASE_URL + "/logout";
+        }
+
+        // 3️⃣ Handle File Upload
+        async function handleFileUpload(event) {
+            event.preventDefault();
+
+            const token = localStorage.getItem("authToken");
+            if (!token) {
+                alert("Authentication required! Redirecting to login...");
+                window.location.href = API_BASE_URL + "/login";
+                return;
+            }
+
+            const jsonFileInput = document.getElementById("jsonFile");
+            const imageFileInput = document.getElementById("imageFile");
+            const jsonFile = jsonFileInput.files[0];
+            const imageFile = imageFileInput.files[0];
+
+            if (jsonFile) {
+                const formData = new FormData();
+                formData.append('jsonFile', jsonFile);
+                formData.append('imageFile', imageFile);
+
+                try {
+                    const response = await fetch(API_BASE_URL + "/generate_excel", {
+                        method: "POST",
+                        headers: {
+                            "Authorization": `Bearer ${token}`
+                        },
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = "aws_pricing.xlsx";
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                    } else {
+                        alert("Failed to generate Excel file");
+                    }
+                } catch (error) {
+                    alert("Error uploading file!");
+                    console.error(error);
+                }
+            }
+        }
+
+        // Run authentication check on page load
+        window.onload = checkAuthentication;
+    </script>
+</head>
+<body>
+    <h1>Upload JSON to Generate Excel</h1>
+    <p id="userInfo">Checking authentication...</p>
+
+    <form id="uploadForm" style="display: none;" onsubmit="handleFileUpload(event)">
+        <label for="jsonFile">Upload JSON:</label>
+        <input type="file" id="jsonFile" accept="application/json" required>
+        
+        <label for="imageFile">Upload Image:</label>
+        <input type="file" id="imageFile" accept="image/*" required>
+        
+        <button type="submit">Upload and Convert</button>
+    </form>
+
+    <button id="logoutButton" style="display: none;" onclick="logout()">Logout</button>
+</body>
+</html>
