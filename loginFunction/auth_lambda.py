@@ -23,6 +23,7 @@ USERINFO_URL = f"{COGNITO_DOMAIN}/oauth2/userInfo"
 LOGOUT_URL = f"{COGNITO_DOMAIN}/logout"
 REDIRECT_URI = ssm.get_parameter(Name="/auth/redirect-uri", WithDecryption=True)["Parameter"]["Value"]
 API_GATEWAY_URI = ssm.get_parameter(Name="/auth/api-gateway-uri", WithDecryption=True)["Parameter"]["Value"]
+FRONTEND_URL = ssm.get_parameter(Name="/auth/frontend-url", WithDescryption=True)["Parameter"]["Value"]
 
 session = boto3.session.Session()
 client = session.client(
@@ -86,14 +87,12 @@ def authorize(event):
     # Get user info
     headers = {"Authorization": f"Bearer {token['access_token']}"}
     user_info = requests.get(USERINFO_URL, headers=headers).json()
-
+    
     return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "message": "Login successful!",
-            "user": user_info,
-            "token": token
-        })
+        "statusCode": 302,
+        "headers": {
+            "Location": f"{FRONTEND_URL}?token={token['id_token']}"
+        }
     }
 
 # Logout: Redirect user to Cognito logout page
