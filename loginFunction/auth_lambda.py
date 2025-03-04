@@ -12,7 +12,7 @@ USER_POOL_ID = ssm.get_parameter(Name="/auth/user-pool-id", WithDecryption=True)
 CLIENT_ID = ssm.get_parameter(Name="/auth/app-client-id", WithDecryption=True)["Parameter"]["Value"]
 
 #Secret Manager
-secret_name = "auth/bom/client_secret"
+secret_name = "auth/bom_app_client_secret"
 region_name = "us-east-1"
 
 # Cognito OIDC URLs
@@ -23,7 +23,7 @@ USERINFO_URL = f"{COGNITO_DOMAIN}/oauth2/userInfo"
 LOGOUT_URL = f"{COGNITO_DOMAIN}/logout"
 REDIRECT_URI = ssm.get_parameter(Name="/auth/redirect-uri", WithDecryption=True)["Parameter"]["Value"]
 API_GATEWAY_URI = ssm.get_parameter(Name="/auth/api-gateway-uri", WithDecryption=True)["Parameter"]["Value"]
-FRONTEND_URL = ssm.get_parameter(Name="/auth/frontend-url", WithDescryption=True)["Parameter"]["Value"]
+FRONTEND_URL = ssm.get_parameter(Name="/auth/frontend-url", WithDecryption=True)["Parameter"]["Value"]
 
 session = boto3.session.Session()
 client = session.client(
