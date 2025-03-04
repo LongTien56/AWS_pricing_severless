@@ -1,54 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JSON to Excel Converter</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JSON to Excel Converter</title>
 </head>
 <body>
-    <h1>Upload JSON to Generate Excel</h1>
-    <form id="uploadForm">
-        <label for="jsonFile">Upload JSON:</label>
-        <input type="file" id="jsonFile" accept="application/json" required>
-        
-        <label for="imageFile">Upload Image:</label>
-        <input type="file" id="imageFile" accept="image/*" required>
-        
-        <button type="submit">Upload and Convert</button>
-    </form>
-    <script>
-        document.getElementById('uploadForm').addEventListener('submit', async function(event) {
-            event.preventDefault();
+  <h1>Upload JSON to Generate Excel</h1>
+  <form id="uploadForm">
+    <label for="jsonFile">Upload JSON:</label>
+    <input type="file" id="jsonFile" accept="application/json" required>
+    
+    <label for="imageFile">Upload Image:</label>
+    <input type="file" id="imageFile" accept="image/*" required>
+    
+    <button type="submit">Upload and Convert</button>
+  </form>
+  <script>
+    // Định nghĩa API Gateway URL
+    const API_BASE_URL = "https://your-api-id.execute-api.us-east-1.amazonaws.com/prod";
+    
+    document.getElementById('uploadForm').addEventListener('submit', async function(event) {
+      event.preventDefault();
 
-            const jsonFileInput = document.getElementById('jsonFile');
-            const imageFileInput = document.getElementById('imageFile');
-            const jsonFile = jsonFileInput.files[0];
-            const imageFile = imageFileInput.files[0];
+      const jsonFileInput = document.getElementById('jsonFile');
+      const imageFileInput = document.getElementById('imageFile');
+      const jsonFile = jsonFileInput.files[0];
+      const imageFile = imageFileInput.files[0];
 
-            if (jsonFile) {
-                const formData = new FormData();
-                formData.append('jsonFile', jsonFile);
-                formData.append('imageFile', imageFile);
+      if (jsonFile) {
+        const formData = new FormData();
+        formData.append('jsonFile', jsonFile);
+        formData.append('imageFile', imageFile);
 
-                const response = await fetch('/generate_excel', {
-                    method: 'POST',
-                    body: formData // Use formData to include both files
-                });
-
-                if (response.ok) {
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'aws_pricing.xlsx';
-                    document.body.appendChild(a);
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                } else {
-                    alert('Failed to generate Excel file');
-                }
-            }
+        const response = await fetch(API_BASE_URL + '/generate_excel', {
+          method: 'POST',
+          body: formData // Gửi formData bao gồm cả hai file
         });
-    </script>
+
+        if (response.ok) {
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'aws_pricing.xlsx';
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+        } else {
+          alert('Failed to generate Excel file');
+        }
+      }
+    });
+  </script>
 </body>
 </html>
