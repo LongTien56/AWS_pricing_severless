@@ -1,56 +1,73 @@
 import json
 import uuid
+import base64
+import boto3
+import logging
 from datetime import datetime
 from io import BytesIO
 import pandas as pd
 import xlsxwriter
-import boto3
-import base64
+from requests_toolbelt.multipart import decoder  # ✅ Required for multipart parsing
 
-# Cấu hình S3 và DynamoDB
-S3_BUCKET = "generated-bom-files"                # Thay bằng tên S3 bucket của bạn
-DYNAMODB_TABLE = "generated_bom_file_metadata"    # Thay bằng tên bảng DynamoDB của bạn
+# Enable logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# AWS Services
+S3_BUCKET = "generated-bom-files"
+DYNAMODB_TABLE = "generated_bom_file_metadata"
 
 s3_client = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
 metadata_table = dynamodb.Table(DYNAMODB_TABLE)
 
 def lambda_handler(event, context):
+    """AWS Lambda handler to process JSON and image upload, generate an Excel file, and store in S3."""
     try:
-        # 1. Lấy thông tin người dùng từ context của custom authorizer
-        authorizer = event.get("requestContext", {}).get("authorizer", {})
-        user_email = authorizer.get("lambda", {}).get("email")
-        if not user_email:
-            return {
-                "statusCode": 401,
-                "body": json.dumps({"error": "User not authenticated"})
-            }
-        
-        # 2. Nhận dữ liệu từ request body (JSON)
-        body = event.get("body", "")
-        if event.get("isBase64Encoded", False):
-            body = base64.b64decode(body).decode("utf-8")
-        data = json.loads(body)
-        
-        # Lấy customerName từ payload
-        customer_name = data.get("customerName", "").strip()
+        logger.info("🔹 Lambda function triggered")
+        logger.info("Received event: %s", json.dumps(event))
+
+        # 1. Get Content-Type from headers
+        content_type = event["headers"].get("content-type", "")
+        if "multipart/form-data" not in content_type:
+            logger.error("❌ Invalid content type: Expected multipart/form-data")
+            return {"statusCode": 400, "body": json.dumps({"error": "Invalid content type"})}
+
+        # 2. Decode multipart/form-data request
+        body_bytes = base64.b64decode(event["body"]) if event.get("isBase64Encoded") else event["body"]
+        multipart_data = decoder.MultipartDecoder(body_bytes, content_type)
+
+        customer_name = None
+        json_data = None
+        image_bytes = None
+
+        for part in multipart_data.parts:
+            content_disposition = part.headers.get(b'Content-Disposition', b'').decode()
+
+            if 'name="customerName"' in content_disposition:
+                customer_name = part.text.strip()
+
+            if 'name="jsonData"' in content_disposition:
+                json_data = json.loads(part.text)
+
+            if 'name="imageFile"' in content_disposition:
+                image_bytes = part.content  # ✅ Extract raw image bytes
+
+        # 3. Validate input data
         if not customer_name:
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "Customer name is required"})
-            }
-        
-        json_data = data.get("jsonData")
+            logger.error("❌ Customer name missing")
+            return {"statusCode": 400, "body": json.dumps({"error": "Customer name is required"})}
+
         if not json_data:
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "No JSON data provided"})
-            }
+            logger.error("❌ JSON data missing")
+            return {"statusCode": 400, "body": json.dumps({"error": "No JSON data provided"})}
+
+        logger.info(f"✅ Processing request for customer: {customer_name}")
+
+        # 4. Process Excel File
+        services = json_data.get('Groups', {}).get('Services', [])
         
-        # 3. Xử lý dữ liệu JSON để tạo file Excel
-        services = data.get('Groups', {}).get('Services', [])
-        
-        # Prepare data for Excel without the Description column
+        # Prepare data for Excel
         excel_data = {
             'Region': [],
             'Service': [],
@@ -58,55 +75,30 @@ def lambda_handler(event, context):
             'First 12 Month Total ($)': [],
             'Config Summary': []
         }
-        
+
         for service in services:
             region = service.get('Region', 'N/A')
             service_name = service['Service Name']
             monthly_cost = f"${float(service['Service Cost']['monthly']):,.2f}"
             yearly_cost = f"${float(service['Service Cost']['monthly']) * 12:,.2f}"
-            
-            # Prepare display values
+
+            detail = ", ".join([f"{k}: {v}" for k, v in service['Properties'].items()])
             excel_data['Region'].append(region)
             excel_data['Service'].append(service_name)
             excel_data['Monthly ($)'].append(monthly_cost)
             excel_data['First 12 Month Total ($)'].append(yearly_cost)
-            detail = ", ".join([f"{k}: {v}" for k, v in service['Properties'].items()])
             excel_data['Config Summary'].append(detail)
-        
-        # Create a DataFrame
+
         df = pd.DataFrame(excel_data)
-        
-        # Calculate totals
-        total_monthly = f"${sum([float(x.replace('$', '').replace(',', '')) for x in df['Monthly ($)']]):.2f}"
-        total_12_month = f"${sum([float(x.replace('$', '').replace(',', '')) for x in df['First 12 Month Total ($)']]):.2f}"
-        
-        # Append the total and calculator rows
-        total_row = ['', '', total_monthly, total_12_month, '']
-        calculator_row = ['', '', '', '', '']
-        
-        df.loc[len(df)] = total_row
-        df.loc[len(df)] = calculator_row
-        
-        # Save to Excel
         output = BytesIO()
+
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            # Create the first sheet
             df.to_excel(writer, sheet_name='EST', index=False)
-            
-            # Access the workbook and worksheet for the first sheet
+
             workbook = writer.book
             worksheet = writer.sheets['EST']
-            
-            # Define formats for the first sheet
-            wrap_format = workbook.add_format({
-                'border': 1,
-                'align': 'center',
-                'valign': 'vcenter',
-                'font_name': 'Arial',
-                'font_size': 11,
-                'text_wrap': True
-            })
 
+            # ✅ Format header (yellow background)
             yellow_format = workbook.add_format({
                 'border': 1,
                 'align': 'center',
@@ -114,147 +106,58 @@ def lambda_handler(event, context):
                 'font_name': 'Arial',
                 'font_size': 11,
                 'bg_color': '#FFFF00',
-                'bold': True  # Making text bold
+                'bold': True
             })
 
-            # Write the header row with yellow background
+            # ✅ Apply header formatting
             for col_num, value in enumerate(df.columns.values):
                 worksheet.write(0, col_num, value, yellow_format)
 
-            # Write data rows and apply wrap format
-            data_rows = len(df) - 2  # Number of data rows (excluding total and calculator)
-            for row in range(data_rows):  # Write all data rows
-                for col in range(len(df.columns)):
-                    cell_value = df.iloc[row][df.columns[col]]
-                    worksheet.write(row + 1, col, cell_value, wrap_format)
+            # ✅ Adjust column width
+            worksheet.set_column('A:A', 20)
+            worksheet.set_column('B:B', 25)
+            worksheet.set_column('C:C', 15)
+            worksheet.set_column('D:D', 20)
+            worksheet.set_column('E:E', 90)
 
-            # Set height for rows
-            worksheet.set_row(0, 20)  # Header row
-            for row in range(1, data_rows + 1):  # Data rows
-                worksheet.set_row(row, 70)
-            
-            # Set total and calculator row heights
-            total_row_index = data_rows + 1
-            calculator_row_index = data_rows + 2
-            worksheet.set_row(total_row_index, 20)
-            worksheet.set_row(calculator_row_index, 20)
-            
-            # Set width for columns
-            worksheet.set_column('A:A', 20)  # Region
-            worksheet.set_column('B:B', 25)  # Service
-            worksheet.set_column('C:C', 15)  # Monthly
-            worksheet.set_column('D:D', 20)  # First 12 Month Total
-            worksheet.set_column('E:E', 90)  # Config Summary
+            # 5. ✅ Insert Image (Only This Part Was Updated)
+            if image_bytes:
+                try:
+                    logger.info("🔹 Processing image from multipart/form-data")
 
-            # Format Total row (merge first two columns)
-            worksheet.merge_range(total_row_index, 0, total_row_index, 1, 'Total', yellow_format)
-            worksheet.write(total_row_index, 2, total_monthly, wrap_format)
-            worksheet.write(total_row_index, 3, total_12_month, wrap_format)
+                    # Convert binary data into BytesIO stream
+                    image_stream = BytesIO(image_bytes)
 
-            # Format Calculator row (merge first two columns)
-            worksheet.merge_range(calculator_row_index, 0, calculator_row_index, 1, 'Calculator', yellow_format)
-            worksheet.merge_range(calculator_row_index, 2, calculator_row_index, 3, '', wrap_format)
+                    # Insert the image into Excel (bắt đầu từ hàng dưới bảng dữ liệu)
+                    last_data_row = len(df) + 2  # Chèn ảnh ở vị trí cách bảng dữ liệu 2 hàng
+                    worksheet.insert_image(last_data_row, 0, "image.png", {'image_data': image_stream})
 
-            # Insert the uploaded image below the table with a space
-            if image_file:
-                image_path = image_file.filename  # Get the file name
-                image_file.save(image_path)  # Save the image temporarily
-                # Insert image with one empty row below the last data row
-                worksheet.insert_image(data_rows + 4, 0, image_path)  # Insert image at row data_rows + 4
+                    logger.info("✅ Image successfully inserted into Excel")
 
-            # Create a new sheet for Questions and Sample Answers
-            # Create a new sheet for Questions and Sample Answers
-            # Create a new sheet for Questions and Sample Answers
-            question_sheet = workbook.add_worksheet('Questions and Answers')
-
-            # Define formats for the new sheet (header format only)
-            qa_header_format = workbook.add_format({
-                'bg_color': '#FFFF00',
-                'bold': True,
-                'border': 1,
-                'align': 'center',
-                'valign': 'vcenter'
-            })
-
-            # Write header with yellow background
-            question_sheet.write('A1', 'Questions', qa_header_format)
-            question_sheet.write('B1', 'Sample Answers', qa_header_format)
-
-            # Set column widths and row heights
-            question_sheet.set_column('A:A', 90)  # Questions column
-            question_sheet.set_column('B:B', 90)  # Sample Answers column
-            question_sheet.set_row(0, 30)  # Header row height
-
-            # Sample data without yellow background
-            sample_questions = ["What is AWS?", "How does Lambda work?", "What is S3?"]
-            sample_answers = ["AWS is Amazon Web Services.", "Lambda allows you to run code without provisioning servers.", "S3 is a scalable storage service."]
-
-            # Write sample data without yellow background
-            for i, (question, answer) in enumerate(zip(sample_questions, sample_answers), start=1):
-                question_sheet.write(i, 0, question)  # Write question
-                question_sheet.write(i, 1, answer)  # Write sample answer
-                question_sheet.set_row(i, 30)  # Set height for each row
-
-            # Define a format for the border
-            border_format = workbook.add_format({
-                'border': 1,
-                'align': 'center',
-                'valign': 'vcenter'
-            })
-
-            # Apply borders around the header and the data range
-            question_sheet.conditional_format(0, 0, 0, 1, {'type': 'no_blanks', 'format': qa_header_format})  # Only for the header row
-            question_sheet.conditional_format(0, 0, len(sample_questions), 1, {'type': 'no_blanks', 'format': border_format})  # Add borders to the entire range including headers
-
-            # Optional: You can set the height for all rows, if needed
-            for i in range(len(sample_questions) + 1):  # +1 to include the header row
-                question_sheet.set_row(i, 30)  # Set height for each row
-
-
+                except Exception as img_error:
+                    logger.error("❌ Image processing error", exc_info=True)
+                    print(f"❌ Error processing image: {img_error}")
 
         output.seek(0)
-        
-        # 5. Tạo tên file và S3 key dựa trên customer name (thay vì file_uuid đơn thuần)
-        # Chúng ta có thể làm: "<customer_name>_<uuid>.xlsx"
+
+        # 6. Upload to S3
         file_uuid = str(uuid.uuid4())
-        # Loại bỏ ký tự không hợp lệ cho tên file (nếu cần)
         safe_customer_name = "".join(c for c in customer_name if c.isalnum() or c in (' ', '_')).strip().replace(" ", "_")
-        s3_key = f"{user_email}/{safe_customer_name}_{datetime.utcnow().isoformat()}.xlsx"
-        
-        # Upload file Excel lên S3
+        s3_key = f"{safe_customer_name}_{datetime.utcnow().isoformat()}.xlsx"
+
         s3_client.upload_fileobj(output, S3_BUCKET, s3_key)
-        
-        # 6. Lưu metadata vào DynamoDB
-        metadata_item = {
-            "user_email": user_email,
-            "file_id": file_uuid,
-            "customer_name": customer_name,
-            "s3_key": s3_key,
-            "s3_url": f"https://{S3_BUCKET}.s3.amazonaws.com/{s3_key}",
-            "created_at": datetime.utcnow().isoformat() + "Z"
-        }
-        metadata_table.put_item(Item=metadata_item)
-        
-        # 7. Tạo pre-signed URL để tải file (URL có hiệu lực 1 giờ)
+        logger.info(f"✅ File uploaded to S3: {s3_key}")
+
+        # 7. Generate pre-signed URL for download
         presigned_url = s3_client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": S3_BUCKET, "Key": s3_key},
-            ExpiresIn=3600
+            "get_object", Params={"Bucket": S3_BUCKET, "Key": s3_key}, ExpiresIn=3600
         )
-        
+
         return {
             "statusCode": 200,
-            "body": json.dumps({
-                "message": "Excel file generated and stored successfully",
-                "file_url": presigned_url
-            })
+            "body": json.dumps({"message": "Success", "file_url": presigned_url})
         }
-        
+
     except Exception as e:
-        import traceback
-        error_message = traceback.format_exc()
-        print("Exception:", error_message)
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": str(e)})
-        }
+        logger.error("❌ Unhandled exception", exc_info=True)
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}

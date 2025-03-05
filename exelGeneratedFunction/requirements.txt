@@ -3,3 +3,4 @@ openpyxl
 testresources
 flask-cors
 XlsxWriter
+requests_toolbelt
