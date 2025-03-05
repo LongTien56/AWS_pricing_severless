@@ -18,8 +18,12 @@
   </form>
   <script>
     // Định nghĩa API Gateway URL
-    const API_BASE_URL = "https://your-api-id.execute-api.us-east-1.amazonaws.com/prod";
+    const API_BASE_URL = "https://zzgzxd9ctg.execute-api.us-east-1.amazonaws.com";
     
+    // Lấy token từ URL query string
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get("token");
+
     document.getElementById('uploadForm').addEventListener('submit', async function(event) {
       event.preventDefault();
 
@@ -33,9 +37,10 @@
         formData.append('jsonFile', jsonFile);
         formData.append('imageFile', imageFile);
 
-        const response = await fetch(API_BASE_URL + '/generate_excel', {
+        // Đính kèm token vào URL dưới dạng query string
+        const response = await fetch(API_BASE_URL + '/generate_excel?token=' + encodeURIComponent(token), {
           method: 'POST',
-          body: formData // Gửi formData bao gồm cả hai file
+          body: formData
         });
 
         if (response.ok) {

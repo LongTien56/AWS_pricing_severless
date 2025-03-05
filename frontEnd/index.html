@@ -1,132 +1,140 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>JSON to Excel Converter</title>
-  <script>
-    // 🔹 Define API Gateway URL (Change this when API Gateway changes)
-    const API_BASE_URL = "https://zzgzxd9ctg.execute-api.us-east-1.amazonaws.com";
+import json
+import uuid
+from datetime import datetime
+from io import BytesIO
+import pandas as pd
+import xlsxwriter
+import boto3
+import base64
 
-    // Function to extract token from URL and store it in localStorage
-    function storeTokenFromUrl() {
-      const urlParams = new URLSearchParams(window.location.search);
-      const token = urlParams.get("token");
-      if (token) {
-        localStorage.setItem("authToken", token);
-        // Remove the token from URL for security (optional)
-        window.history.replaceState({}, document.title, window.location.pathname);
-      }
-    }
+# Cấu hình S3 và DynamoDB
+S3_BUCKET = "generated-bom-files"                # Thay bằng tên S3 bucket của bạn
+DYNAMODB_TABLE = "generated_bom_file_metadata"    # Thay bằng tên bảng DynamoDB của bạn
 
-    // 1️⃣ Check if the user is authenticated
-    async function checkAuthentication() {
-      const token = localStorage.getItem("authToken");
+s3_client = boto3.client("s3")
+dynamodb = boto3.resource("dynamodb")
+metadata_table = dynamodb.Table(DYNAMODB_TABLE)
 
-      if (!token) {
-        alert("You are not logged in! Redirecting to login...");
-        window.location.href = API_BASE_URL + "/login";
-        return;
-      }
-
-      try {
-        // Call your backend to verify the token (assuming /home does that)
-        const response = await fetch(API_BASE_URL + "/home?token=" + token);
-        const data = await response.json();
-
-        if (response.status === 200) {
-          document.getElementById("userInfo").innerText = `Logged in as: ${data.user.email}`;
-          document.getElementById("uploadForm").style.display = "block";
-          document.getElementById("logoutButton").style.display = "block";
-        } else {
-          alert("Session expired! Redirecting to login...");
-          localStorage.removeItem("authToken");
-          window.location.href = API_BASE_URL + "/login";
+def lambda_handler(event, context):
+    try:
+        # 1. Lấy thông tin người dùng từ context của custom authorizer
+        authorizer = event.get("requestContext", {}).get("authorizer", {})
+        user_email = authorizer.get("lambda", {}).get("email")
+        if not user_email:
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "User not authenticated"})
+            }
+        
+        # 2. Nhận dữ liệu từ request body (JSON)
+        body = event.get("body", "")
+        if event.get("isBase64Encoded", False):
+            body = base64.b64decode(body).decode("utf-8")
+        data = json.loads(body)
+        
+        # Lấy customerName từ payload
+        customer_name = data.get("customerName", "").strip()
+        if not customer_name:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Customer name is required"})
+            }
+        
+        json_data = data.get("jsonData")
+        if not json_data:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "No JSON data provided"})
+            }
+        
+        # 3. Xử lý dữ liệu JSON để tạo file Excel
+        services = json_data.get("Groups", {}).get("Services", [])
+        excel_data = {
+            "Region": [],
+            "Service": [],
+            "Monthly ($)": [],
+            "First 12 Month Total ($)": [],
+            "Config Summary": []
         }
-      } catch (error) {
-        console.error("Error:", error);
-        alert("Something went wrong! Redirecting to login...");
-        window.location.href = API_BASE_URL + "/login";
-      }
-    }
-
-    // 2️⃣ Handle Logout
-    function logout() {
-      localStorage.removeItem("authToken");
-      alert("Logged out successfully!");
-      window.location.href = API_BASE_URL + "/logout";
-    }
-
-    // 3️⃣ Handle File Upload
-    async function handleFileUpload(event) {
-      event.preventDefault();
-
-      const token = localStorage.getItem("authToken");
-      if (!token) {
-        alert("Authentication required! Redirecting to login...");
-        window.location.href = API_BASE_URL + "/login";
-        return;
-      }
-
-      const jsonFileInput = document.getElementById("jsonFile");
-      const imageFileInput = document.getElementById("imageFile");
-      const jsonFile = jsonFileInput.files[0];
-      const imageFile = imageFileInput.files[0];
-
-      if (jsonFile) {
-        const formData = new FormData();
-        formData.append('jsonFile', jsonFile);
-        formData.append('imageFile', imageFile);
-
-        try {
-          const response = await fetch(API_BASE_URL + "/generate_excel", {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${token}`
-            },
-            body: formData
-          });
-
-          if (response.ok) {
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "aws_pricing.xlsx";
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-          } else {
-            alert("Failed to generate Excel file");
-          }
-        } catch (error) {
-          alert("Error uploading file!");
-          console.error(error);
+        for service in services:
+            region = service.get("Region", "N/A")
+            service_name = service.get("Service Name", "")
+            monthly = float(service.get("Service Cost", {}).get("monthly", 0))
+            monthly_cost = f"${monthly:,.2f}"
+            yearly_cost = f"${monthly * 12:,.2f}"
+            excel_data["Region"].append(region)
+            excel_data["Service"].append(service_name)
+            excel_data["Monthly ($)"].append(monthly_cost)
+            excel_data["First 12 Month Total ($)"].append(yearly_cost)
+            detail = ", ".join([f"{k}: {v}" for k, v in service.get("Properties", {}).items()])
+            excel_data["Config Summary"].append(detail)
+        
+        df = pd.DataFrame(excel_data)
+        total_monthly = f"${sum([float(x.replace('$','').replace(',','')) for x in df['Monthly ($)']]):.2f}"
+        total_12_month = f"${sum([float(x.replace('$','').replace(',','')) for x in df['First 12 Month Total ($)']]):.2f}"
+        total_row = ["", "", total_monthly, total_12_month, ""]
+        calculator_row = ["", "", "", "", ""]
+        df.loc[len(df)] = total_row
+        df.loc[len(df)] = calculator_row
+        
+        # 4. Tạo file Excel trong bộ nhớ
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            df.to_excel(writer, sheet_name="EST", index=False)
+            workbook = writer.book
+            worksheet = writer.sheets["EST"]
+            yellow_format = workbook.add_format({
+                "bg_color": "#FFFF00",
+                "bold": True,
+                "border": 1,
+                "align": "center",
+                "valign": "vcenter"
+            })
+            for col_num, value in enumerate(df.columns.values):
+                worksheet.write(0, col_num, value, yellow_format)
+        output.seek(0)
+        
+        # 5. Tạo tên file và S3 key dựa trên customer name (thay vì file_uuid đơn thuần)
+        # Chúng ta có thể làm: "<customer_name>_<uuid>.xlsx"
+        file_uuid = str(uuid.uuid4())
+        # Loại bỏ ký tự không hợp lệ cho tên file (nếu cần)
+        safe_customer_name = "".join(c for c in customer_name if c.isalnum() or c in (' ', '_')).strip().replace(" ", "_")
+        s3_key = f"{user_email}/{safe_customer_name}_{file_uuid}.xlsx"
+        
+        # Upload file Excel lên S3
+        s3_client.upload_fileobj(output, S3_BUCKET, s3_key)
+        
+        # 6. Lưu metadata vào DynamoDB
+        metadata_item = {
+            "user_email": user_email,
+            "file_id": file_uuid,
+            "customer_name": customer_name,
+            "s3_key": s3_key,
+            "s3_url": f"https://{S3_BUCKET}.s3.amazonaws.com/{s3_key}",
+            "created_at": datetime.utcnow().isoformat() + "Z"
         }
-      }
-    }
-
-    // Run on page load: first store token from URL (if any), then check authentication.
-    window.onload = function() {
-      storeTokenFromUrl();
-      checkAuthentication();
-    };
-  </script>
-</head>
-<body>
-  <h1>Upload JSON to Generate Excel</h1>
-  <p id="userInfo">Checking authentication...</p>
-
-  <form id="uploadForm" style="display: none;" onsubmit="handleFileUpload(event)">
-    <label for="jsonFile">Upload JSON:</label>
-    <input type="file" id="jsonFile" accept="application/json" required>
-    
-    <label for="imageFile">Upload Image:</label>
-    <input type="file" id="imageFile" accept="image/*" required>
-    
-    <button type="submit">Upload and Convert</button>
-  </form>
-
-  <button id="logoutButton" style="display: none;" onclick="logout()">Logout</button>
-</body>
-</html>
+        metadata_table.put_item(Item=metadata_item)
+        
+        # 7. Tạo pre-signed URL để tải file (URL có hiệu lực 1 giờ)
+        presigned_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": s3_key},
+            ExpiresIn=3600
+        )
+        
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "message": "Excel file generated and stored successfully",
+                "file_url": presigned_url
+            })
+        }
+        
+    except Exception as e:
+        import traceback
+        error_message = traceback.format_exc()
+        print("Exception:", error_message)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
