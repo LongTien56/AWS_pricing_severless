@@ -11,6 +11,9 @@
     <label for="customerName">Customer Name:</label>
     <input type="text" id="customerName" placeholder="Nhập tên khách hàng" required>
     <br><br>
+    <label for="awsCalculatorUrl">AWS Calculator URL:</label>
+    <input type="url" id="awsCalculatorUrl" placeholder="Nhập AWS Calculator URL" required>
+    <br><br>
     <label for="jsonFile">Upload JSON:</label>
     <input type="file" id="jsonFile" accept="application/json" required>
     <br><br>
@@ -19,75 +22,94 @@
     <br><br>
     <button type="submit">Upload and Convert</button>
   </form>
+  
+  <br>
+  <button id="listButton">List Files</button>
+  <div id="fileList"></div>
+  
   <script>
-    // Định nghĩa API Gateway URL
+    // Define API Gateway URL (adjust as needed)
     const API_BASE_URL = "https://zzgzxd9ctg.execute-api.us-east-1.amazonaws.com";
     
-    // Lấy token từ URL query string
+    // Retrieve token from URL query string
     const urlParams = new URLSearchParams(window.location.search);
     const token = urlParams.get("token");
 
+    // Handle form submission using multipart/form-data
     document.getElementById('uploadForm').addEventListener('submit', async function(event) {
       event.preventDefault();
 
-      // Lấy tên khách hàng
       const customerName = document.getElementById('customerName').value.trim();
-      if (!customerName) {
-        alert("Please enter customer name");
+      const awsCalculatorUrl = document.getElementById('awsCalculatorUrl').value.trim();
+      if (!customerName || !awsCalculatorUrl) {
+        alert("Please enter customer name and AWS Calculator URL");
         return;
       }
 
-      const jsonFileInput = document.getElementById('jsonFile');
-      const imageFileInput = document.getElementById('imageFile');
-      const jsonFile = jsonFileInput.files[0];
-      const imageFile = imageFileInput.files[0];
+      const jsonFile = document.getElementById('jsonFile').files[0];
+      const imageFile = document.getElementById('imageFile').files[0];
 
       if (!jsonFile) {
           alert("Please select a JSON file.");
           return;
       }
       
-      // Đọc nội dung file JSON
+      // Create a FormData object and append fields
+      const formData = new FormData();
+      formData.append("customerName", customerName);
+      formData.append("awsCalculatorUrl", awsCalculatorUrl);
+
+      // Read JSON file content as text and append with key "jsonData"
       const jsonContent = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result);
         reader.onerror = () => reject("Error reading JSON file");
         reader.readAsText(jsonFile);
       });
-      
-      // Đọc file hình ảnh (nếu có) dưới dạng Base64
-      let imageData = null;
-      if (imageFile) {
-        imageData = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result); // Base64 data URL
-          reader.onerror = () => reject("Error reading image file");
-          reader.readAsDataURL(imageFile);
-        });
-      }
-      
-      // Tạo payload JSON
-      const payload = {
-        customerName: customerName,
-        jsonData: JSON.parse(jsonContent),  // Chuyển chuỗi JSON thành object
-        imageData: imageData                // Có thể null nếu không có file hình
-      };
+      formData.append("jsonData", jsonContent);
 
-      // Gửi request POST với JSON payload, đính kèm token qua query string
+      // If an image file is provided, append it with key "imageFile"
+      if (imageFile) {
+        formData.append("imageFile", imageFile);
+      }
+
+      // Send the request. Do not set Content-Type header manually.
       const response = await fetch(API_BASE_URL + '/generate_excel?token=' + encodeURIComponent(token), {
         method: 'POST',
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
+        body: formData
       });
 
       if (response.ok) {
         const data = await response.json();
-        // Sau khi nhận URL tải file, chuyển hướng đến URL đó để tải file
+        // Redirect to the pre-signed URL for downloading the file
         window.location.href = data.file_url;
       } else {
         alert('Failed to generate Excel file');
+        console.error(await response.json());
+      }
+    });
+
+    // Handle "List Files" button to list user files
+    document.getElementById('listButton').addEventListener('click', async function() {
+      const response = await fetch(API_BASE_URL + '/list_files?token=' + encodeURIComponent(token), {
+        method: 'GET'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const fileListDiv = document.getElementById('fileList');
+        fileListDiv.innerHTML = "<h2>List of Files:</h2>";
+        // Assuming API /list_files returns an array of files
+        data.files.forEach(file => {
+          const fileLink = document.createElement("a");
+          fileLink.href = file.presigned_url;  // Presigned URL for download
+          fileLink.innerText = `${file.customer_name} - ${file.created_at}`;
+          fileLink.target = "_blank";
+          const p = document.createElement("p");
+          p.appendChild(fileLink);
+          fileListDiv.appendChild(p);
+        });
+      } else {
+        alert("Failed to list files");
         console.error(await response.json());
       }
     });
